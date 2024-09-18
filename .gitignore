@@ -8,6 +8,8 @@
 *.so
 *.dylib
 
+simple-http-proxy
+
 # Test binary, built with `go test -c`
 *.test
 
