@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 )
 
 var (
@@ -111,6 +112,9 @@ func (p *proxy) handle(ctx context.Context, conn net.Conn) {
 			return
 		}
 
+		ctx, cancel := context.WithTimeout(ctx, 2*time.Hour)
+		defer cancel()
+
 		if err := httpHandler(ctx, connCtx, conn, req, p.handler); err != nil {
 			log.Println(err)
 		}
@@ -203,17 +207,16 @@ func httpsHandler(ctx context.Context, connCtx ConnContext, conn net.Conn, handl
 		errSig <- handler.SendDownstream(connCtx, proxyConn, conn)
 	}()
 
-	err = <-errSig
-	if err != nil {
-		return err
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case err := <-errSig:
+		if err != nil {
+			return err
+		}
 	}
 
-	err = <-errSig
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return <-errSig
 }
 
 func produceHostPort(in string) string {
