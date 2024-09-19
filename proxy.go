@@ -124,6 +124,8 @@ func (p *proxy) handle(ctx context.Context, conn net.Conn) {
 			ProxyConnection:    req.Header.Get("Proxy-Connection"),
 		}
 
+		log.Printf("Proxy request for %s", connCtx.Host)
+
 		if req.Method == "CONNECT" {
 			if err := httpsHandler(ctx, connCtx, conn, p.handler); err != nil {
 				log.Println(err)
