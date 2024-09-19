@@ -41,22 +41,23 @@ func (err *httpsRequestedError) Error() string {
 }
 
 type ConnContext struct {
-	Host, ProxyAuthentication, ProxyConnection string
+	Host, ProxyAuthorization, ProxyConnection string
 }
 
 type Handler interface {
-	SendUpstream(w io.Writer, r io.Reader) error
-	SendDownstream(w io.Writer, r io.Reader) error
+	SendUpstream(ctx ConnContext, w io.Writer, r io.Reader) error
+	SendDownstream(ctx ConnContext, w io.Writer, r io.Reader) error
 }
 
 type SimpleHandler struct{}
 
-func (SimpleHandler) SendUpstream(w io.Writer, r io.Reader) (err error) {
-	_, err = io.Copy(w, r)
+func (SimpleHandler) SendUpstream(_ ConnContext, w io.Writer, r io.Reader) (err error) {
+	count, err := io.Copy(w, r)
+	log.Printf("SimpleHandler.SendUpstream %d bytes", count)
 	return
 }
 
-func (SimpleHandler) SendDownstream(w io.Writer, r io.Reader) (err error) {
+func (SimpleHandler) SendDownstream(_ ConnContext, w io.Writer, r io.Reader) (err error) {
 	_, err = io.Copy(w, r)
 	return
 }
@@ -125,9 +126,9 @@ func (p *proxy) handle(ctx context.Context, conn net.Conn) {
 		// }
 
 		connCtx := ConnContext{
-			Host:                req.Host,
-			ProxyAuthentication: req.Header.Get("Proxy-Authentication"),
-			ProxyConnection:     req.Header.Get("Proxy-Connection"),
+			Host:               req.Host,
+			ProxyAuthorization: req.Header.Get("Proxy-Authorization"),
+			ProxyConnection:    req.Header.Get("Proxy-Connection"),
 		}
 
 		if req.Method == "CONNECT" {
@@ -180,7 +181,7 @@ func httpHandler(ctx context.Context, connCtx ConnContext, conn net.Conn, req *h
 		return err
 	}
 
-	if err := handler.SendUpstream(proxyConn, upstreamBuf); err != nil {
+	if err := handler.SendUpstream(connCtx, proxyConn, upstreamBuf); err != nil {
 		return err
 	}
 
@@ -195,7 +196,7 @@ func httpHandler(ctx context.Context, connCtx ConnContext, conn net.Conn, req *h
 		return err
 	}
 
-	if err := handler.SendDownstream(conn, downstreamBuf); err != nil {
+	if err := handler.SendDownstream(connCtx, conn, downstreamBuf); err != nil {
 		return err
 	}
 
@@ -228,12 +229,12 @@ func httpsHandler(ctx context.Context, connCtx ConnContext, conn net.Conn, handl
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		errUp = handler.SendUpstream(conn, proxyConn)
+		errUp = handler.SendUpstream(connCtx, conn, proxyConn)
 	}()
 
 	go func() {
 		defer wg.Done()
-		errDown = handler.SendDownstream(proxyConn, conn)
+		errDown = handler.SendDownstream(connCtx, proxyConn, conn)
 	}()
 
 	wg.Wait()

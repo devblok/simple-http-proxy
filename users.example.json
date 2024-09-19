@@ -1,0 +1,14 @@
+{
+	"users": [
+		{
+    			"username": "lemon",
+    			"password": "juice",
+    			"quota_bytes": 1024
+		},
+		{
+    			"username": "pina",
+    			"password": "colada",
+    			"quota_bytes": 1073741824
+		}
+	]
+}
