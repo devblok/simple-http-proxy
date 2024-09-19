@@ -1,10 +1,22 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"errors"
+	"fmt"
+	"io"
 	"log"
 	"net"
+	"net/http"
+	"net/url"
+	"strings"
 	"sync"
+)
+
+var (
+	ErrRequestForHTTPS = errors.New("Request is for HTTPS")
 )
 
 // Proxy performs these functions:
@@ -20,23 +32,49 @@ import (
 //		b. User not authenticated (should return 407 probably)
 // 5. Keeps running until closed
 // 6. Waits for goroutines and cleans up
+type httpsRequestedError struct {
+	host string
+}
 
-type handler func(context.Context, net.Conn) error
+func (err *httpsRequestedError) Error() string {
+	return fmt.Sprintf("HTTPS tunnel requested to %s", err.host)
+}
+
+type ConnContext struct {
+	Host, ProxyAuthentication, ProxyConnection string
+}
+
+type Handler interface {
+	SendUpstream(w io.Writer, r io.Reader) error
+	SendDownstream(w io.Writer, r io.Reader) error
+}
+
+type SimpleHandler struct{}
+
+func (SimpleHandler) SendUpstream(w io.Writer, r io.Reader) (err error) {
+	_, err = io.Copy(w, r)
+	return
+}
+
+func (SimpleHandler) SendDownstream(w io.Writer, r io.Reader) (err error) {
+	_, err = io.Copy(w, r)
+	return
+}
 
 // newProxy creates a proxy with configuration. Proxy owns the listener
 // and will close it itself.
-func newProxy(hlr handler, listener net.Listener) *proxy {
+func newProxy(listener net.Listener, handler Handler) *proxy {
 	return &proxy{
-		handler:  hlr,
 		listener: listener,
+		handler:  handler,
 		closeSig: make(chan struct{}),
 		wg:       new(sync.WaitGroup),
 	}
 }
 
 type proxy struct {
-	handler  handler
 	listener net.Listener
+	handler  Handler
 
 	closeSig chan struct{}
 	wg       *sync.WaitGroup
@@ -72,7 +110,34 @@ func (p *proxy) handle(ctx context.Context, conn net.Conn) {
 	go func() {
 		defer p.wg.Done()
 		defer conn.Close()
-		if err := p.handler(ctx, conn); err != nil {
+
+		bufReader := bufio.NewReader(conn)
+		req, err := http.ReadRequest(bufReader)
+		if err != nil {
+			log.Println(err)
+		}
+
+		// FIXME: Header value is promoted to Request.Host, so I cannot check
+		// for it's availability. Not having this check might not be correct.
+		// host := req.Header.Get("Host")
+		// if host == "" {
+		// 	return ErrMissingHostHeader
+		// }
+
+		connCtx := ConnContext{
+			Host:                req.Host,
+			ProxyAuthentication: req.Header.Get("Proxy-Authentication"),
+			ProxyConnection:     req.Header.Get("Proxy-Connection"),
+		}
+
+		if req.Method == "CONNECT" {
+			if err := httpsHandler(ctx, connCtx, conn, p.handler); err != nil {
+				log.Println(err)
+			}
+			return
+		}
+
+		if err := httpHandler(ctx, connCtx, conn, req, p.handler); err != nil {
 			log.Println(err)
 		}
 	}()
@@ -82,4 +147,113 @@ func (p *proxy) close() {
 	close(p.closeSig)
 	p.listener.Close()
 	p.wg.Wait()
+}
+
+func fmtURL(url *url.URL) string {
+	return fmt.Sprintf("http://%s%s?%s",
+		url.Host, url.Path, url.RawQuery,
+	)
+}
+
+func httpHandler(ctx context.Context, connCtx ConnContext, conn net.Conn, req *http.Request, handler Handler) error {
+	proxyReq, err := http.NewRequest(req.Method, fmtURL(req.URL), req.Body)
+	if err != nil {
+		return err
+	}
+
+	// FIXME: Don't do dumb copy.
+	proxyReq.Header = req.Header
+	for _, cookie := range req.Cookies() {
+		proxyReq.AddCookie(cookie)
+	}
+
+	// TODO: Add X-Forwarded-* headers.
+
+	proxyConn, err := net.Dial("tcp", produceHostPort(req.Host))
+	if err != nil {
+		return err
+	}
+	defer proxyConn.Close()
+
+	upstreamBuf := new(bytes.Buffer)
+	if err := proxyReq.Write(upstreamBuf); err != nil {
+		return err
+	}
+
+	if err := handler.SendUpstream(proxyConn, upstreamBuf); err != nil {
+		return err
+	}
+
+	proxyBufReader := bufio.NewReader(proxyConn)
+	proxyResp, err := http.ReadResponse(proxyBufReader, proxyReq)
+	if err != nil {
+		return err
+	}
+
+	downstreamBuf := new(bytes.Buffer)
+	if err := proxyResp.Write(downstreamBuf); err != nil {
+		return err
+	}
+
+	if err := handler.SendDownstream(conn, downstreamBuf); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func httpsHandler(ctx context.Context, connCtx ConnContext, conn net.Conn, handler Handler) error {
+	respSuccess := http.Response{
+		Status:     "200 Connection Established",
+		StatusCode: 200,
+		Proto:      "HTTP/1.1",
+		ProtoMajor: 1,
+		ProtoMinor: 1,
+	}
+
+	proxyConn, err := net.Dial("tcp", connCtx.Host)
+	if err != nil {
+		return err
+	}
+
+	if err := respSuccess.Write(conn); err != nil {
+		return err
+	}
+
+	var (
+		wg             sync.WaitGroup
+		errUp, errDown error
+	)
+
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		errUp = handler.SendUpstream(conn, proxyConn)
+	}()
+
+	go func() {
+		defer wg.Done()
+		errDown = handler.SendDownstream(proxyConn, conn)
+	}()
+
+	wg.Wait()
+
+	if errUp != nil {
+		return errUp
+	}
+
+	if errDown != nil {
+		return errDown
+	}
+
+	return nil
+}
+
+func produceHostPort(in string) string {
+	if strings.Contains(in, ":") {
+		if _, _, err := net.SplitHostPort(in); err != nil {
+			return in
+		}
+	}
+	return net.JoinHostPort(in, "80")
 }
