@@ -52,13 +52,13 @@ type Handler interface {
 type SimpleHandler struct{}
 
 func (SimpleHandler) SendUpstream(_ ConnContext, w io.Writer, r io.Reader) (err error) {
-	count, err := io.Copy(w, r)
-	log.Printf("SimpleHandler.SendUpstream %d bytes", count)
+	_, err = io.Copy(w, r)
 	return
 }
 
 func (SimpleHandler) SendDownstream(_ ConnContext, w io.Writer, r io.Reader) (err error) {
 	_, err = io.Copy(w, r)
+	// _, err = copyNet(w, r)
 	return
 }
 
@@ -117,13 +117,6 @@ func (p *proxy) handle(ctx context.Context, conn net.Conn) {
 		if err != nil {
 			log.Println(err)
 		}
-
-		// FIXME: Header value is promoted to Request.Host, so I cannot check
-		// for it's availability. Not having this check might not be correct.
-		// host := req.Header.Get("Host")
-		// if host == "" {
-		// 	return ErrMissingHostHeader
-		// }
 
 		connCtx := ConnContext{
 			Host:               req.Host,
@@ -221,30 +214,23 @@ func httpsHandler(ctx context.Context, connCtx ConnContext, conn net.Conn, handl
 		return err
 	}
 
-	var (
-		wg             sync.WaitGroup
-		errUp, errDown error
-	)
-
-	wg.Add(2)
+	errSig := make(chan error, 2)
 	go func() {
-		defer wg.Done()
-		errUp = handler.SendUpstream(connCtx, conn, proxyConn)
+		errSig <- handler.SendUpstream(connCtx, conn, proxyConn)
 	}()
 
 	go func() {
-		defer wg.Done()
-		errDown = handler.SendDownstream(connCtx, proxyConn, conn)
+		errSig <- handler.SendDownstream(connCtx, proxyConn, conn)
 	}()
 
-	wg.Wait()
-
-	if errUp != nil {
-		return errUp
+	err = <-errSig
+	if err != nil {
+		return err
 	}
 
-	if errDown != nil {
-		return errDown
+	err = <-errSig
+	if err != nil {
+		return err
 	}
 
 	return nil

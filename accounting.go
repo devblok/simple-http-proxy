@@ -103,11 +103,8 @@ func copyAndAccount(w io.Writer, r io.Reader, counter *atomic.Int64) error {
 			for bytesWritten < bytesRead {
 				bytesAdded, writeErr = w.Write(buffer[0:bytesRead])
 				if bytesAdded > 0 {
-					// I would probably not count this every time, for performance reasons.
-					// Atomics are still not that good for performance.
 					bytesWritten += bytesAdded
 					counter.Add(int64(bytesAdded))
-					log.Printf("%d bytes accounted for", bytesAdded)
 				}
 				if writeErr != nil {
 					return writeErr
