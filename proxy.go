@@ -19,27 +19,6 @@ var (
 	ErrRequestForHTTPS = errors.New("Request is for HTTPS")
 )
 
-// Proxy performs these functions:
-// 1. Is created with a listener
-// 2. Accepts connections
-// 3. Attempts to reason via HTTP
-// 4. Based on the request spins off process:
-// 	4a. If HTTP, do simple proxy by calling the destination.
-// 	4b. If HTTPS (indicated by CONNECT), opens a TCP connection to destination, tunnels.
-//	4c. Gets an error, returns the original error
-//	4d. There is a proxy error, return custom error. This might be:
-//		a. User used up allowance
-//		b. User not authenticated (should return 407 probably)
-// 5. Keeps running until closed
-// 6. Waits for goroutines and cleans up
-type httpsRequestedError struct {
-	host string
-}
-
-func (err *httpsRequestedError) Error() string {
-	return fmt.Sprintf("HTTPS tunnel requested to %s", err.host)
-}
-
 type ConnContext struct {
 	Host, ProxyAuthorization, ProxyConnection string
 }
@@ -58,7 +37,6 @@ func (SimpleHandler) SendUpstream(_ ConnContext, w io.Writer, r io.Reader) (err 
 
 func (SimpleHandler) SendDownstream(_ ConnContext, w io.Writer, r io.Reader) (err error) {
 	_, err = io.Copy(w, r)
-	// _, err = copyNet(w, r)
 	return
 }
 
@@ -165,7 +143,7 @@ func httpHandler(ctx context.Context, connCtx ConnContext, conn net.Conn, req *h
 
 	// TODO: Add X-Forwarded-* headers.
 
-	proxyConn, err := net.Dial("tcp", connCtx.Host)
+	proxyConn, err := net.Dial("tcp", produceHostPort(connCtx.Host))
 	if err != nil {
 		return err
 	}
