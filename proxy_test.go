@@ -1,12 +1,13 @@
 package main // In this case needed because some things I decided to leave private
 
 import (
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
-	"time"
 )
 
 type HelloHandler struct{}
@@ -25,26 +26,20 @@ func TestProxyHttp(t *testing.T) {
 		t.Error(err)
 		t.FailNow()
 	}
+	defer listener.Close()
 
 	proxy := newProxy(listener, new(SimpleHandler))
 	proxy.serve()
 	defer proxy.close()
 
-	proxyDialer := &net.Dialer{
-		Timeout:   30 * time.Second,
-		KeepAlive: 30 * time.Second,
-	}
-	proxyTransport := &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
-		DialContext:           proxyDialer.DialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          100,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-	}
-	proxyClient := http.Client{
-		Transport: proxyTransport,
+	proxyURL, err := url.Parse(
+		fmt.Sprintf("http://%s",
+			listener.Addr().String(),
+		),
+	)
+	if err != nil {
+		t.Error(err)
+		t.FailNow()
 	}
 
 	req, err := http.NewRequest("GET", server.URL, nil)
@@ -53,7 +48,9 @@ func TestProxyHttp(t *testing.T) {
 		t.FailNow()
 	}
 
-	resp, err := proxyClient.Do(req)
+	client := server.Client()
+	client.Transport.(*http.Transport).Proxy = http.ProxyURL(proxyURL)
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Error(err)
 		t.FailNow()

@@ -116,7 +116,7 @@ func copyAndAccount(w io.Writer, r io.Reader, counter *atomic.Int64) error {
 		}
 		if errors.Is(readErr, io.EOF) {
 			return nil
-		} else {
+		} else if readErr != nil {
 			return readErr
 		}
 	}

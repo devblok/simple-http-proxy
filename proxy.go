@@ -170,7 +170,7 @@ func httpHandler(ctx context.Context, connCtx ConnContext, conn net.Conn, req *h
 
 	// TODO: Add X-Forwarded-* headers.
 
-	proxyConn, err := net.Dial("tcp", produceHostPort(req.Host))
+	proxyConn, err := net.Dial("tcp", connCtx.Host)
 	if err != nil {
 		return err
 	}
